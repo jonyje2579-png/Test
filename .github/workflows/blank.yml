@@ -9,22 +9,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Распаковать zip, если исходники в архиве
+        run: |
+          if ! find . -maxdepth 3 -name 'settings.gradle*' -not -path './.git/*' | grep -q .; then
+            for z in ./*.zip; do
+              echo "Распаковка $z"
+              unzip -o -q "$z" -d _src
+            done
+          fi
+
       - name: Найти Gradle-проект
         run: |
-          echo "== ls -la в корне репозитория =="
           ls -la
-          echo "== дерево файлов (до 3 уровней) =="
-          find . -maxdepth 3 -not -path './.git/*' | sort | head -80
-          S=$(find . -maxdepth 3 \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) -not -path './.git/*' | head -1)
+          find . -maxdepth 4 -not -path './.git/*' | sort | head -80
+          S=$(find . -maxdepth 4 \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) -not -path './.git/*' | head -1)
           if [ -z "$S" ]; then
-            echo "::error::settings.gradle.kts не найден ни в корне, ни в подпапках. Смотри дерево выше."
+            echo "::error::settings.gradle.kts не найден. Смотри дерево выше."
             exit 1
           fi
           DIR=$(cd "$(dirname "$S")" && pwd)
-          echo "Gradle-проект найден: $DIR"
           echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
 
+      - name: Свои бинарники (extra-libs/)
+        run: |
+          if ls extra-libs/*.so >/dev/null 2>&1; then
+            J="$PROJECT_DIR/app/src/main/jniLibs/arm64-v8a"
+            mkdir -p "$J"
+            cp extra-libs/*.so "$J/"
+            echo "MANUAL_LIBS=1" >> "$GITHUB_ENV"
+            ls -la "$J"
+          fi
+
       - name: Fetch proot from Termux repo
+        if: env.MANUAL_LIBS != '1'
         continue-on-error: true
         run: |
           set -eux
