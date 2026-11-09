@@ -1,49 +1,68 @@
 name: Build APK
-
 on:
   push:
-    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
+      - name: Найти Gradle-проект
+        run: |
+          echo "== ls -la в корне репозитория =="
+          ls -la
+          echo "== дерево файлов (до 3 уровней) =="
+          find . -maxdepth 3 -not -path './.git/*' | sort | head -80
+          S=$(find . -maxdepth 3 \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) -not -path './.git/*' | head -1)
+          if [ -z "$S" ]; then
+            echo "::error::settings.gradle.kts не найден ни в корне, ни в подпапках. Смотри дерево выше."
+            exit 1
+          fi
+          DIR=$(cd "$(dirname "$S")" && pwd)
+          echo "Gradle-проект найден: $DIR"
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v4
+      - name: Fetch proot from Termux repo
+        continue-on-error: true
+        run: |
+          set -eux
+          sudo apt-get update -y
+          sudo apt-get install -y patchelf binutils xz-utils
+          BASE=https://packages.termux.dev/apt/termux-main/pool/main
+          latest() { curl -fsSL "$BASE/$1/" | grep -oE '[A-Za-z0-9_.+-]+_aarch64\.deb' | sort -uV | tail -1; }
+          mkdir -p /tmp/t && cd /tmp/t
+          P=$(latest p/proot); T=$(latest libt/libtalloc)
+          curl -fsSLO "$BASE/p/proot/$P"
+          curl -fsSLO "$BASE/libt/libtalloc/$T"
+          for d in "$P" "$T"; do ar x "$d"; tar xf data.tar.xz; done
+          U=data/data/com.termux/files/usr
+          J="$PROJECT_DIR/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$J"
+          cp "$U/bin/proot" "$J/libproot.so"
+          cp "$U/libexec/proot/loader" "$J/libproot-loader.so"
+          cp -L "$U/lib/libtalloc.so.2" "$J/libtalloc.so"
+          cd "$J"
+          readelf -d libproot.so | grep -E 'NEEDED|RPATH|RUNPATH' || true
+          patchelf --replace-needed libtalloc.so.2 libtalloc.so libproot.so
+          patchelf --remove-rpath libproot.so || true
 
-    - name: Fetch proot from Termux repo
-      run: |
-        # Скачиваем proot и его зависимости из репозитория Termux
-        mkdir -p app/src/main/jniLibs/arm64-v8a
-        cd app/src/main/jniLibs/arm64-v8a
-        wget https://github.com/termux/termux-packages/releases/download/proot-5.1.107-1/proot_5.1.107_aarch64.deb
-        ar x proot_5.1.107_aarch64.deb
-        tar xf data.tar.xz
-        mv data/data/com.termux/files/usr/bin/proot ./libproot.so
-        # (Клод также писал про patchelf и libtalloc, но начнем с простого)
-      continue-on-error: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
 
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
-      with:
-        gradle-version: 8.9
+      - name: Build debug APK
+        run: |
+          cd "$PROJECT_DIR"
+          gradle assembleDebug --no-daemon
 
-    - name: Build with Gradle
-      run: gradle assembleDebug
-
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: ProotSpike-apk
-        path: app/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProotSpike-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
